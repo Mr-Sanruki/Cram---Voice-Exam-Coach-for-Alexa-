@@ -80,7 +80,8 @@ export function createAgentRouter(db: Database.Database): Router {
         if (sess && sess.status === 'active') {
           const lower = utterance.trim().toLowerCase();
           const isExitCommand = /^(stop|exit|cancel|quit|end quiz|finish quiz)/i.test(lower);
-          const isOtherCommand = /(study plan|make me a plan|create a plan|steady plan|what.*exam|list exam|progress|streak|today.*plan|plan.*today)/i.test(lower);
+          const isOtherCommand = /\b(make (?:me )?a (?:study )?plan|study plan|steady plan|create a plan|what(?:'s| is) my plan|today(?:'s)? plan|plan today|list exams?|show exams?|my streak|my progress)\b/i.test(lower) ||
+            /\b(?:add|and|schedule|register)\s+(?:my\s+)?[a-z0-9+#]+\s+(?:exam|income|test)\b/i.test(lower);
 
           if (isExitCommand) {
             chosenToolCalls = [
@@ -157,12 +158,29 @@ export function createAgentRouter(db: Database.Database): Router {
         finalSpokenReply = "I've updated your exam study data.";
       }
 
+      // Determine if a quiz session remains active
+      let resultingActiveSessionId: string | null = null;
+      for (const tc of toolCallsTrace) {
+        if (tc.tool === 'start_quiz') {
+          resultingActiveSessionId = (tc.result as any)?.structuredContent?.sessionId || null;
+        } else if (tc.tool === 'answer_question') {
+          if ((tc.result as any)?.structuredContent?.isComplete) {
+            resultingActiveSessionId = null;
+          } else {
+            resultingActiveSessionId = (tc.arguments as any)?.sessionId || activeQuizSessionId || null;
+          }
+        } else if (tc.tool === 'end_quiz') {
+          resultingActiveSessionId = null;
+        }
+      }
+
       // 6. Cleanly close the MCP Client session
       await client.close();
       client = null;
 
       res.json({
         spokenReply: finalSpokenReply,
+        activeQuizSessionId: resultingActiveSessionId,
         toolCalls: toolCallsTrace,
         totalTimeMs: Date.now() - startTime
       });

@@ -53,7 +53,7 @@ export async function startQuiz(
   durationMinutes: number = 10
 ): Promise<StartQuizResult> {
   const examStmt = db.prepare<[number], ExamRow>(`SELECT * FROM exams WHERE id = ?`);
-  const exam = examStmt.get(examId);
+  let exam = examStmt.get(examId);
   if (!exam) {
     throw new Error(`Exam with ID ${examId} not found.`);
   }
@@ -67,11 +67,27 @@ export async function startQuiz(
     selectedTopic = topicStmt.get(examId, topicName.trim());
 
     if (!selectedTopic) {
-      // Fuzzy search topic name
+      // Fuzzy search topic name within the exam
       const fuzzyStmt = db.prepare<[number, string], TopicRow>(`
         SELECT * FROM topics WHERE exam_id = ? AND lower(name) LIKE lower(?) LIMIT 1
       `);
       selectedTopic = fuzzyStmt.get(examId, `%${topicName.trim()}%`);
+    }
+
+    if (!selectedTopic) {
+      // Cross-exam fuzzy search across all exams
+      const crossExamStmt = db.prepare<[string], TopicRow & { actual_exam_id: number }>(`
+        SELECT t.*, e.id as actual_exam_id FROM topics t
+        JOIN exams e ON t.exam_id = e.id
+        WHERE lower(t.name) LIKE lower(?) LIMIT 1
+      `);
+      const cross = crossExamStmt.get(`%${topicName.trim()}%`);
+      if (cross) {
+        examId = cross.actual_exam_id;
+        const newExam = examStmt.get(examId);
+        if (newExam) exam = newExam;
+        selectedTopic = cross;
+      }
     }
   }
 
@@ -210,13 +226,18 @@ export async function answerQuestion(
     const finalAvg = Math.round(stats.avg_score);
     endSessionStmt.run(stats.count, stats.correct_count, finalAvg, sessionId);
 
-    const spokenReply = `${graded.feedback} Quiz complete! You scored an average of ${finalAvg}% across ${stats.count} questions. Great job!`;
+    let feedbackText = graded.feedback;
+    if (graded.score < 70 && !feedbackText.toLowerCase().includes(question.expected_answer.toLowerCase().slice(0, 15))) {
+      feedbackText = `${graded.feedback} The correct answer is: ${question.expected_answer}.`;
+    }
+
+    const spokenReply = `${feedbackText} Quiz complete! You scored an average of ${finalAvg}% across ${stats.count} questions. Great job!`;
 
     return {
       sessionId,
       isComplete: true,
       score: graded.score,
-      feedback: graded.feedback,
+      feedback: feedbackText,
       correctAnswer: graded.correctAnswer,
       spokenReply,
       summary: {
@@ -259,7 +280,12 @@ export async function answerQuestion(
   `);
   updateSessionIndexStmt.run(nextQuestionNumber, nextQuestionNumber, Math.round(stats.avg_score), sessionId);
 
-  const spokenReply = `${graded.feedback} Next question on ${nextTopicName}: ${nextQ.question}`;
+  let feedbackText = graded.feedback;
+  if (graded.score < 70 && !feedbackText.toLowerCase().includes(question.expected_answer.toLowerCase().slice(0, 15))) {
+    feedbackText = `${graded.feedback} The correct answer is: ${question.expected_answer}.`;
+  }
+
+  const spokenReply = `${feedbackText} Next question on ${nextTopicName}: ${nextQ.question}`;
 
   return {
     sessionId,

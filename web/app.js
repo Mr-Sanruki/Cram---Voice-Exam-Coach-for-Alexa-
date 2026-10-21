@@ -96,64 +96,126 @@
   }
 
   // Web Speech API: Speech Recognition Setup
+  // Uses CONTINUOUS + INTERIM mode with a silence-debounce timer
+  // so the browser captures the full sentence instead of clipping after one word.
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recognition = null;
+  let silenceTimer = null;           // debounce: fires after 1.5s of silence
+  let accumulatedTranscript = '';    // builds up across multiple result events
+  let interimDisplay = null;         // live feedback element in the transcript area
+
+  const SILENCE_TIMEOUT_MS = 1500;   // wait 1.5 s after last speech before committing
 
   if (SpeechRecognition) {
     recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;       // keep listening until we stop it
+    recognition.interimResults = true;   // show partial text while user speaks
     recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       state.isListening = true;
+      accumulatedTranscript = '';
       setOrbState('listening');
       alexaStatus.textContent = "Listening... Speak your exam question or command";
       playChime('start');
     };
 
     recognition.onresult = (event) => {
-      // Reject any incoming mic inputs if already processing or speaking
-      if (state.isProcessing || state.isSpeaking) {
-        return;
-      }
+      // Block any mic input while we are already processing a response or speaking
+      if (state.isProcessing || state.isSpeaking) return;
 
-      let finalTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const item = event.results[i];
-        if (item.isFinal || item[0]) {
-          finalTranscript += item[0].transcript;
+      // Build the full transcript from all results so far
+      let finalPart = '';
+      let interimPart = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const r = event.results[i];
+        if (r.isFinal) {
+          finalPart += r[0].transcript;
+        } else {
+          interimPart += r[0].transcript;
         }
       }
 
-      const text = finalTranscript.trim();
-      if (text) {
-        // Immediately halt listening to prevent acoustic speaker feedback!
-        try { recognition.stop(); } catch {}
-        state.isListening = false;
-        handleUserUtterance(text);
+      accumulatedTranscript = finalPart;
+      const liveText = (finalPart + interimPart).trim();
+
+      // Show live interim feedback in the transcript area
+      if (liveText) {
+        showInterimBubble(liveText);
       }
+
+      // Reset the silence timer every time new speech arrives
+      clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        // Silence detected — commit the accumulated sentence
+        const sentence = (accumulatedTranscript || liveText).trim();
+        if (sentence && !state.isProcessing && !state.isSpeaking) {
+          removeInterimBubble();
+          try { recognition.stop(); } catch {}
+          state.isListening = false;
+          accumulatedTranscript = '';
+          handleUserUtterance(sentence);
+        }
+      }, SILENCE_TIMEOUT_MS);
     };
 
     recognition.onerror = (event) => {
+      clearTimeout(silenceTimer);
+      // 'no-speech' and 'aborted' are expected when we stop/start deliberately
+      if (event.error === 'no-speech' || event.error === 'aborted') {
+        if (!state.isSpeaking && !state.isProcessing) {
+          state.isListening = false;
+          setOrbState('idle');
+          alexaStatus.textContent = "No speech detected • Tap mic or type below";
+        }
+        return;
+      }
       state.isListening = false;
       if (!state.isSpeaking && !state.isProcessing) {
         setOrbState('idle');
-        alexaStatus.textContent = event.error === 'no-speech'
-          ? "No speech detected • Tap mic or type below"
-          : `Mic status: ${event.error}`;
+        alexaStatus.textContent = `Mic error: ${event.error}`;
       }
     };
 
     recognition.onend = () => {
-      state.isListening = false;
+      // In continuous mode the browser may auto-stop (e.g. network hiccup).
+      // Only reset the UI if we did not deliberately stop for processing/speaking.
       if (!state.isSpeaking && !state.isProcessing) {
+        state.isListening = false;
         setOrbState('idle');
         alexaStatus.textContent = "Ready • Tap mic or type below";
+        removeInterimBubble();
       }
     };
   } else {
     alexaStatus.textContent = "Web Speech API not supported in this browser • Type below";
+  }
+
+  // Live interim bubble helpers — gives the user real-time "I hear you" feedback
+  function showInterimBubble(text) {
+    if (!interimDisplay) {
+      interimDisplay = document.createElement('div');
+      interimDisplay.className = 'message-bubble user interim';
+      interimDisplay.innerHTML = `
+        <div class="message-sender">
+          <span class="sender-avatar">👤</span>
+          <span class="sender-name">Student</span>
+          <span class="timestamp" style="font-style:italic;">speaking…</span>
+        </div>
+        <div class="message-content interim-text"></div>
+      `;
+      transcriptContainer.appendChild(interimDisplay);
+    }
+    interimDisplay.querySelector('.interim-text').textContent = text;
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+  }
+
+  function removeInterimBubble() {
+    if (interimDisplay) {
+      interimDisplay.remove();
+      interimDisplay = null;
+    }
   }
 
   // Toggle Microphone
@@ -170,6 +232,10 @@
     }
 
     if (state.isListening) {
+      // User manually stops mic
+      clearTimeout(silenceTimer);
+      accumulatedTranscript = '';
+      removeInterimBubble();
       try { recognition.stop(); } catch {}
       playChime('stop');
       state.isListening = false;
@@ -225,7 +291,10 @@
 
     utterance.onstart = () => {
       state.isSpeaking = true;
-      // Ensure mic is stopped while Alexa speaks so it doesn't transcribe itself!
+      // Kill mic + debounce timer while Alexa speaks so it doesn't transcribe itself!
+      clearTimeout(silenceTimer);
+      accumulatedTranscript = '';
+      removeInterimBubble();
       if (recognition && state.isListening) {
         try { recognition.abort(); } catch {}
         state.isListening = false;
@@ -263,6 +332,11 @@
 
     state.isProcessing = true;
 
+    // Clean up speech recognition state
+    clearTimeout(silenceTimer);
+    accumulatedTranscript = '';
+    removeInterimBubble();
+
     // Stop recognition if still listening
     if (recognition && state.isListening) {
       try { recognition.stop(); } catch {}
@@ -294,21 +368,15 @@
 
       const data = await response.json();
 
-      // Check for quiz session id in tool calls
+      // Sync quiz session state directly from server response
+      if ('activeQuizSessionId' in data) {
+        state.activeQuizSessionId = data.activeQuizSessionId;
+      }
+
+      // Record MCP tool calls in Inspector Drawer
       if (Array.isArray(data.toolCalls)) {
         for (const tc of data.toolCalls) {
           recordMcpCall(tc);
-
-          if (tc.tool === 'start_quiz' && tc.result?.structuredContent?.sessionId) {
-            state.activeQuizSessionId = tc.result.structuredContent.sessionId;
-          } else if (tc.tool === 'answer_question') {
-            if (tc.result?.structuredContent?.isComplete) {
-              state.activeQuizSessionId = null;
-            }
-          } else {
-            // Any other tool (end_quiz, make_study_plan, get_today_plan, etc.) cleanly resets quiz state
-            state.activeQuizSessionId = null;
-          }
         }
       }
 

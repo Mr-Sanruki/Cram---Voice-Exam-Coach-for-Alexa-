@@ -452,6 +452,23 @@ body::before {
   border: 1px solid rgba(0, 229, 255, 0.3);
 }
 
+.message-bubble.user.interim {
+  opacity: 0.88;
+  border: 1px dashed rgba(0, 229, 255, 0.6);
+  background: linear-gradient(135deg, rgba(0, 82, 212, 0.2), rgba(0, 229, 255, 0.12));
+  animation: interimPulse 1.2s infinite alternate ease-in-out;
+}
+
+.message-bubble.user.interim .interim-text {
+  font-style: italic;
+  color: #bbf5ff;
+}
+
+@keyframes interimPulse {
+  0% { border-color: rgba(0, 229, 255, 0.4); }
+  100% { border-color: rgba(0, 229, 255, 0.95); box-shadow: 0 0 15px rgba(0, 229, 255, 0.25); }
+}
+
 .message-sender {
   display: flex;
   align-items: center;

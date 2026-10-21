@@ -340,10 +340,10 @@ Respond in strictly valid JSON:
 
     // 3. Deterministic Mock Evaluator ($0 fallback)
     const cleanUser = userAnswer.toLowerCase().trim();
-    if (!cleanUser || cleanUser === "i don't know" || cleanUser === "no idea" || cleanUser === "pass") {
+    if (!cleanUser || cleanUser === "i don't know" || cleanUser === "no idea" || cleanUser === "pass" || cleanUser === "skip") {
       return {
         score: 0,
-        feedback: "No worries, that's why we practice. Keep this concept in mind for next time.",
+        feedback: `No worries! The correct answer is: ${expectedAnswer}.`,
         correctAnswer: expectedAnswer
       };
     }
@@ -366,15 +366,15 @@ Respond in strictly valid JSON:
     let score = Math.round(30 + overlap * 65);
     if (cleanUser.length > 15 && score < 50) score = 55;
     if (cleanUser.length < 5 && score > 40) score = 30;
-    score = Math.min(95, Math.max(20, score));
+    score = Math.min(95, Math.max(10, score));
 
     let feedback = '';
     if (score >= 80) {
       feedback = "Spot on! That was a clear and accurate explanation.";
     } else if (score >= 60) {
-      feedback = "Good answer! You hit the main points, just remember the finer details.";
+      feedback = `Good attempt! You hit key points. Remember: ${expectedAnswer}.`;
     } else {
-      feedback = "You're on the right track, but review the key formulas.";
+      feedback = `That's not quite right. The correct answer is: ${expectedAnswer}.`;
     }
 
     return {
@@ -457,6 +457,62 @@ Rules:
       };
     }
 
+    // Intent: add exam (robust against speech recognition errors: "add"->"and"/"at", "exam"->"income")
+    const hasAddVerb = /(?:add|and|ad|at|schedule|register|create|put|set|enter|new)/i.test(lastMsg);
+    const hasExamNoun = /(?:exam|income|test|midterm|finals?|paper)/i.test(lastMsg);
+    const hasDateIndicator = /(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|tomorrow|today|\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?[a-z]+|[a-z]+\s+\d{1,2}|2026)/i.test(lastMsg);
+
+    if ((hasAddVerb && hasExamNoun) || (hasExamNoun && hasDateIndicator)) {
+      // Extract subject
+      let subject = '';
+      const subjMatch = lastMsg.match(/(?:add|and|ad|at|schedule|register|create|put|set|enter|new)?\s*(?:my\s+)?([A-Za-z0-9+#]+)\s+(?:exam|income|test|midterm|finals?|paper)/i);
+      if (subjMatch && subjMatch[1] && !['the', 'an', 'a', 'my', 'new', 'and', 'add'].includes(subjMatch[1].toLowerCase())) {
+        subject = subjMatch[1].trim();
+      } else {
+        const forMatch = lastMsg.match(/(?:exam|income|test|midterm)\s+(?:for|in|on)\s+([A-Za-z0-9+#]+)/i);
+        if (forMatch && forMatch[1]) {
+          subject = forMatch[1].trim();
+        }
+      }
+
+      // Normalize common speech errors for subject
+      if (/^max$/i.test(subject) || /^mats?$/i.test(subject)) {
+        subject = 'MATH';
+      } else if (/^english$/i.test(subject)) {
+        subject = 'ENGLISH';
+      } else if (subject) {
+        subject = subject.toUpperCase();
+      } else {
+        subject = 'EXAM';
+      }
+
+      // Parse spoken date into real YYYY-MM-DD
+      const examDate = parseSpokenDate(lastMsg);
+
+      // Check optional topics: e.g. "with topics algebra, calculus"
+      let topics: string[] | undefined;
+      const topicsMatch = lastMsg.match(/(?:with|covering)?\s*topics?\s+(.+)$/i);
+      if (topicsMatch) {
+        topics = topicsMatch[1]
+          .split(/,|and/)
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0);
+      }
+
+      return {
+        toolCalls: [
+          {
+            name: 'add_exam',
+            arguments: {
+              subject,
+              examDate,
+              ...(topics && topics.length > 0 ? { topics } : {})
+            }
+          }
+        ]
+      };
+    }
+
     // Intent: start quiz / quiz me
     if (
       lastMsg.includes('quiz') ||
@@ -520,7 +576,9 @@ Rules:
       (lastMsg.includes('plan') && lastMsg.includes('today')) ||
       lastMsg.includes('what should i study') ||
       lastMsg.includes('study plan today') ||
-      lastMsg.includes('my plan')
+      lastMsg.includes('my plan') ||
+      lastMsg.includes('schedule today') ||
+      lastMsg.includes("today's schedule")
     ) {
       return {
         toolCalls: [
@@ -585,31 +643,91 @@ Rules:
       };
     }
 
-    // Intent: add exam
-    if (lastMsg.includes('add') && lastMsg.includes('exam')) {
-      const subjectMatch = lastMsg.match(/add\s+(?:my\s+)?([A-Za-z0-9]+)\s+exam/i);
-      const subject = subjectMatch ? subjectMatch[1].toUpperCase() : 'EXAM';
-      // Compute a sensible default future date
-      const future = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
-
-      return {
-        toolCalls: [
-          {
-            name: 'add_exam',
-            arguments: {
-              subject,
-              examDate: future
-            }
-          }
-        ]
-      };
-    }
-
     // Default voice assistant response
     return {
       reply: "I'm Cram, your Alexa+ exam coach. You can say 'quiz me on graph theory', 'make me a study plan', or 'what's my plan for today?'"
     };
   }
+}
+
+/**
+ * Parses conversational dates into YYYY-MM-DD
+ */
+export function parseSpokenDate(input: string): string {
+  const months: Record<string, number> = {
+    january: 0, jan: 0,
+    february: 1, feb: 1,
+    march: 2, mar: 2,
+    april: 3, apr: 3,
+    may: 4,
+    june: 5, jun: 5,
+    july: 6, jul: 6,
+    august: 7, aug: 7,
+    september: 8, sep: 8, sept: 8,
+    october: 9, oct: 9,
+    november: 10, nov: 10,
+    december: 11, dec: 11
+  };
+
+  const lower = input.toLowerCase();
+
+  if (lower.includes('tomorrow')) {
+    const d = new Date(Date.now() + 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+  if (lower.includes('today')) {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  // Look for "in X days"
+  const inDaysMatch = lower.match(/in\s+(\d+)\s+days?/);
+  if (inDaysMatch) {
+    const days = parseInt(inDaysMatch[1], 10);
+    const d = new Date(Date.now() + days * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+
+  const pad = (n: number) => n.toString().padStart(2, '0');
+
+  // Month + Day: e.g. "October 23rd", "Oct 23", "October 23 2026"
+  const monthDayMatch = lower.match(/(?:on\s+)?([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?/);
+  if (monthDayMatch && months[monthDayMatch[1]] !== undefined) {
+    const month = months[monthDayMatch[1]];
+    const day = parseInt(monthDayMatch[2], 10);
+    const now = new Date();
+    let year = monthDayMatch[3] ? parseInt(monthDayMatch[3], 10) : now.getFullYear();
+    const candidate = new Date(year, month, day);
+    if (!monthDayMatch[3] && candidate.getTime() < now.getTime() - 30 * 86400000) {
+      year += 1;
+    }
+    return `${year}-${pad(month + 1)}-${pad(day)}`;
+  }
+
+  // Day + Month: e.g. "23rd October", "23 October", "21st of November 2026"
+  const dayMonthMatch = lower.match(/(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+(?:of\s+)?)?([a-z]+)(?:\s+(\d{4}))?/);
+  if (dayMonthMatch && months[dayMonthMatch[2]] !== undefined) {
+    const day = parseInt(dayMonthMatch[1], 10);
+    const month = months[dayMonthMatch[2]];
+    const now = new Date();
+    let year = dayMonthMatch[3] ? parseInt(dayMonthMatch[3], 10) : now.getFullYear();
+    const candidate = new Date(year, month, day);
+    if (!dayMonthMatch[3] && candidate.getTime() < now.getTime() - 30 * 86400000) {
+      year += 1;
+    }
+    return `${year}-${pad(month + 1)}-${pad(day)}`;
+  }
+
+  // ISO: 2026-10-23
+  const isoMatch = lower.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const y = parseInt(isoMatch[1], 10);
+    const m = parseInt(isoMatch[2], 10);
+    const d = parseInt(isoMatch[3], 10);
+    return `${y}-${pad(m)}-${pad(d)}`;
+  }
+
+  // Default to 14 days from now if date not recognized
+  return new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
 }
 
 export const llm = new LlmService();
