@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cram — Alexa+ Spoken Voice Exam Coach (MCP)</title>
+  <meta name="description" content="Cram is an AI-powered voice exam coach for Alexa+ built on the Model Context Protocol (MCP) with SM-2 spaced repetition.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="dark-theme">
+  <!-- App Container -->
+  <div class="app-layout">
+    <!-- Top Navigation Header -->
+    <header class="top-nav">
+      <div class="brand">
+        <div class="brand-orb"></div>
+        <div class="brand-text">
+          <h1>Cram <span class="badge-alexa">for Alexa+</span></h1>
+          <p class="subtitle">Spoken Voice Exam Coach • MCP Streamable HTTP</p>
+        </div>
+      </div>
+
+      <div class="nav-controls">
+        <div class="streak-pill" id="headerStreakPill">
+          <span class="fire-icon">🔥</span>
+          <span class="streak-text" id="headerStreakText">5 Day Streak</span>
+        </div>
+
+        <div class="tab-switcher">
+          <button class="tab-btn active" id="tabVoiceBtn" data-tab="voiceView">
+            <span class="icon">🎙️</span> Voice Coach
+          </button>
+          <button class="tab-btn" id="tabDashBtn" data-tab="dashView">
+            <span class="icon">📊</span> Dashboard
+          </button>
+        </div>
+
+        <button class="mcp-toggle-btn" id="toggleMcpInspectorBtn" title="Toggle MCP Tool Calls Inspector">
+          <span class="mcp-indicator"></span>
+          <span>MCP Inspector</span>
+          <span class="badge-count" id="mcpCallCount">0</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <div class="main-workspace">
+      <!-- 1. Voice Assistant View -->
+      <section class="view-panel active" id="voiceView">
+        <div class="voice-experience">
+          <!-- Alexa Holographic Glow Ring -->
+          <div class="alexa-orb-container">
+            <div class="alexa-glow-outer" id="alexaOuterGlow"></div>
+            <div class="alexa-glow-ring" id="alexaRing">
+              <div class="alexa-ring-inner">
+                <button class="mic-button" id="micBtn" title="Click or tap to talk to Cram">
+                  <svg class="mic-svg" viewBox="0 0 24 24" width="38" height="38" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" y1="19" x2="12" y2="22"></line>
+                    <line x1="8" y1="22" x2="16" y2="22"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <!-- Live Status Text -->
+            <div class="alexa-status" id="alexaStatus">Ready • Tap mic or type below</div>
+          </div>
+
+          <!-- Suggested Quick Prompts -->
+          <div class="quick-prompts">
+            <span class="quick-label">Try saying:</span>
+            <button class="prompt-chip" data-text="Quiz me on graph theory for 10 minutes">"Quiz me on graph theory"</button>
+            <button class="prompt-chip" data-text="Make me a study plan for DSGT">"Make me a study plan"</button>
+            <button class="prompt-chip" data-text="What is my study plan for today?">"What's my plan today?"</button>
+            <button class="prompt-chip" data-text="What are my weakest topics?">"Weakest topics"</button>
+            <button class="prompt-chip" data-text="What upcoming exams do I have?">"List exams"</button>
+          </div>
+
+          <!-- Live Conversation Transcript -->
+          <div class="transcript-container" id="transcriptContainer">
+            <div class="message-bubble agent welcome-msg">
+              <div class="message-sender">
+                <span class="sender-avatar">⚡</span>
+                <span class="sender-name">Cram (Alexa+)</span>
+                <span class="timestamp">Just now</span>
+              </div>
+              <div class="message-content">
+                Welcome back! I'm Cram, your voice exam coach for Alexa+. I track your upcoming exams and reinforce weak topics using spaced repetition. Tap the mic or pick a quick prompt to begin!
+              </div>
+            </div>
+          </div>
+
+          <!-- Text Input Fallback Bar -->
+          <div class="voice-input-bar">
+            <form id="textInputForm" class="input-form">
+              <input
+                type="text"
+                id="userTextInput"
+                placeholder="Talk to Alexa+ or type an exam question / command..."
+                autocomplete="off"
+              />
+              <button type="submit" class="send-btn" id="sendBtn" title="Send text command">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Dashboard View -->
+      <section class="view-panel" id="dashView">
+        <div class="dashboard-scroll">
+          <!-- Metric Highlights -->
+          <div class="dashboard-metrics-grid">
+            <div class="metric-card">
+              <div class="metric-icon streak-glow">🔥</div>
+              <div class="metric-details">
+                <span class="metric-value" id="dashStreakValue">5</span>
+                <span class="metric-label">Day Study Streak</span>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-icon time-glow">⏱️</div>
+              <div class="metric-details">
+                <span class="metric-value" id="dashMinutesValue">160</span>
+                <span class="metric-label">Minutes Studied</span>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-icon exam-glow">🎯</div>
+              <div class="metric-details">
+                <span class="metric-value" id="dashExamsCount">3</span>
+                <span class="metric-label">Upcoming Exams</span>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-icon srs-glow">🧠</div>
+              <div class="metric-details">
+                <span class="metric-value" id="dashAvgMastery">51%</span>
+                <span class="metric-label">Average Mastery</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="dashboard-columns">
+            <!-- Left Column: Exams & Mastery -->
+            <div class="dash-col">
+              <!-- Upcoming Exams -->
+              <div class="dash-box">
+                <div class="dash-box-header">
+                  <h3>🎯 Upcoming Exams</h3>
+                  <button class="action-link-btn" id="openAddExamModalBtn">+ Add Exam</button>
+                </div>
+                <div class="exams-list" id="examsListContainer">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
+              <!-- Topic Mastery Matrix -->
+              <div class="dash-box">
+                <div class="dash-box-header">
+                  <h3>🧠 Spaced Repetition Mastery</h3>
+                  <span class="badge-muted">SM-2 Algorithm</span>
+                </div>
+                <div class="mastery-list" id="masteryListContainer">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Column: Today's Plan & Recent Activity -->
+            <div class="dash-col">
+              <!-- Today's Schedule -->
+              <div class="dash-box">
+                <div class="dash-box-header">
+                  <h3>📅 Today's Study Plan</h3>
+                  <button class="action-link-btn" id="regeneratePlanBtn">↻ Refresh Plan</button>
+                </div>
+                <div class="tasks-checklist" id="todayTasksContainer">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
+              <!-- Recent Quiz Sessions -->
+              <div class="dash-box">
+                <div class="dash-box-header">
+                  <h3>🎙️ Recent Voice Quizzes</h3>
+                  <span class="badge-muted">Active Recall</span>
+                </div>
+                <div class="quizzes-history" id="recentQuizzesContainer">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. MCP Inspector Side Panel (Proves MCP Server Calling in Demo) -->
+      <aside class="mcp-inspector-drawer" id="mcpDrawer">
+        <div class="drawer-header">
+          <div class="drawer-title">
+            <span class="indicator-pulse"></span>
+            <h3>MCP Server Inspector</h3>
+          </div>
+          <div class="drawer-actions">
+            <button class="clear-btn" id="clearMcpCallsBtn" title="Clear inspector log">Clear</button>
+            <button class="close-drawer-btn" id="closeMcpDrawerBtn">×</button>
+          </div>
+        </div>
+
+        <div class="drawer-meta">
+          <div class="meta-row">
+            <span class="meta-label">Transport:</span>
+            <span class="meta-badge">Streamable HTTP (2025-11-25)</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">Endpoint:</span>
+            <code class="meta-code">/mcp</code>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">Client Mode:</span>
+            <span class="meta-text">Simulated Alexa+ MCP Client</span>
+          </div>
+        </div>
+
+        <div class="drawer-calls-stream" id="mcpCallsList">
+          <div class="empty-calls-state">
+            <div class="empty-icon">🔌</div>
+            <p>No MCP calls made yet.</p>
+            <span>Ask Alexa+ a question or trigger a quiz to inspect live JSON-RPC tool calls.</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Add Exam Modal -->
+  <div class="modal-backdrop" id="addExamModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Add Upcoming Exam</h3>
+        <button class="modal-close" id="closeAddExamModal">×</button>
+      </div>
+      <form id="addExamForm">
+        <div class="form-group">
+          <label for="examSubjectInput">Subject Name</label>
+          <input type="text" id="examSubjectInput" placeholder="e.g. Operating Systems or CS101" required />
+        </div>
+        <div class="form-group">
+          <label for="examDateInput">Exam Date</label>
+          <input type="date" id="examDateInput" required />
+        </div>
+        <div class="form-group">
+          <label for="examTopicsInput">Topics (comma-separated)</label>
+          <input type="text" id="examTopicsInput" placeholder="Process Scheduling, Memory Management, File Systems" />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" id="cancelAddExamBtn">Cancel</button>
+          <button type="submit" class="btn-primary">Save Exam</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
