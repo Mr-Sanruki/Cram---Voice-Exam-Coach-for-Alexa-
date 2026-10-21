@@ -10,6 +10,7 @@
   const state = {
     isListening: false,
     isSpeaking: false,
+    isProcessing: false,
     activeQuizSessionId: null,
     history: [],
     mcpCallsCount: 0
@@ -112,24 +113,41 @@
     };
 
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      if (transcript && transcript.trim()) {
-        handleUserUtterance(transcript.trim());
+      // Reject any incoming mic inputs if already processing or speaking
+      if (state.isProcessing || state.isSpeaking) {
+        return;
+      }
+
+      let finalTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const item = event.results[i];
+        if (item.isFinal || item[0]) {
+          finalTranscript += item[0].transcript;
+        }
+      }
+
+      const text = finalTranscript.trim();
+      if (text) {
+        // Immediately halt listening to prevent acoustic speaker feedback!
+        try { recognition.stop(); } catch {}
+        state.isListening = false;
+        handleUserUtterance(text);
       }
     };
 
     recognition.onerror = (event) => {
-      console.warn('Speech recognition error:', event.error);
       state.isListening = false;
-      setOrbState('idle');
-      alexaStatus.textContent = event.error === 'no-speech'
-        ? "No speech detected • Tap mic or type below"
-        : `Mic status: ${event.error}`;
+      if (!state.isSpeaking && !state.isProcessing) {
+        setOrbState('idle');
+        alexaStatus.textContent = event.error === 'no-speech'
+          ? "No speech detected • Tap mic or type below"
+          : `Mic status: ${event.error}`;
+      }
     };
 
     recognition.onend = () => {
       state.isListening = false;
-      if (!state.isSpeaking && alexaRing.className.includes('listening')) {
+      if (!state.isSpeaking && !state.isProcessing) {
         setOrbState('idle');
         alexaStatus.textContent = "Ready • Tap mic or type below";
       }
@@ -145,21 +163,36 @@
       return;
     }
 
+    // Cancel speech if talking
+    if (window.speechSynthesis && window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      state.isSpeaking = false;
+    }
+
     if (state.isListening) {
-      recognition.stop();
+      try { recognition.stop(); } catch {}
       playChime('stop');
       state.isListening = false;
       setOrbState('idle');
       alexaStatus.textContent = "Ready • Tap mic or type below";
     } else {
-      // Stop speech synthesis if talking
-      if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
+      if (state.isProcessing) {
+        return; // Don't start listening while a response is in-flight
       }
       try {
         recognition.start();
       } catch (err) {
-        console.warn('Recognition start error:', err);
+        // If already started or in transition, abort and restart cleanly
+        if (err.name === 'InvalidStateError') {
+          try {
+            recognition.abort();
+            setTimeout(() => {
+              if (!state.isProcessing && !state.isSpeaking) {
+                try { recognition.start(); } catch {}
+              }
+            }, 150);
+          } catch {}
+        }
       }
     }
   }
@@ -192,20 +225,32 @@
 
     utterance.onstart = () => {
       state.isSpeaking = true;
+      // Ensure mic is stopped while Alexa speaks so it doesn't transcribe itself!
+      if (recognition && state.isListening) {
+        try { recognition.abort(); } catch {}
+        state.isListening = false;
+      }
       setOrbState('speaking');
       alexaStatus.textContent = "Alexa+ is speaking...";
     };
 
     utterance.onend = () => {
-      state.isSpeaking = false;
-      setOrbState('idle');
-      alexaStatus.textContent = "Ready • Tap mic or type below";
+      // Wait 300ms so acoustic reverb from speakers doesn't trigger the microphone
+      setTimeout(() => {
+        state.isSpeaking = false;
+        if (!state.isProcessing) {
+          setOrbState('idle');
+          alexaStatus.textContent = "Ready • Tap mic or type below";
+        }
+      }, 300);
     };
 
     utterance.onerror = () => {
       state.isSpeaking = false;
-      setOrbState('idle');
-      alexaStatus.textContent = "Ready • Tap mic or type below";
+      if (!state.isProcessing) {
+        setOrbState('idle');
+        alexaStatus.textContent = "Ready • Tap mic or type below";
+      }
     };
 
     window.speechSynthesis.speak(utterance);
@@ -214,6 +259,15 @@
   // Handle User Input (Spoken or Typed)
   async function handleUserUtterance(text) {
     if (!text || !text.trim()) return;
+    if (state.isProcessing) return; // Mutex lock prevents duplicate simultaneous calls!
+
+    state.isProcessing = true;
+
+    // Stop recognition if still listening
+    if (recognition && state.isListening) {
+      try { recognition.stop(); } catch {}
+      state.isListening = false;
+    }
 
     // Add user message to transcript
     appendTranscriptMessage('user', text);
@@ -251,10 +305,15 @@
             if (tc.result?.structuredContent?.isComplete) {
               state.activeQuizSessionId = null;
             }
-          } else if (tc.tool === 'end_quiz') {
+          } else {
+            // Any other tool (end_quiz, make_study_plan, get_today_plan, etc.) cleanly resets quiz state
             state.activeQuizSessionId = null;
           }
         }
+      }
+
+      if (/^(stop|exit|cancel|quit|nevermind)/i.test(text.trim())) {
+        state.activeQuizSessionId = null;
       }
 
       const spokenReply = data.spokenReply || "Action completed.";
@@ -280,6 +339,8 @@
       setOrbState('idle');
       alexaStatus.textContent = "Error communicating with MCP server";
       appendTranscriptMessage('agent', `Sorry, I encountered an error: ${err.message}`);
+    } finally {
+      state.isProcessing = false;
     }
   }
 

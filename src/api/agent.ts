@@ -74,20 +74,39 @@ export function createAgentRouter(db: Database.Database): Router {
       let chosenToolCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
 
       if (activeQuizSessionId) {
-        // Direct route to answer_question if user is in an active quiz
         // Check if session is indeed active
         const sessStmt = db.prepare(`SELECT status FROM quiz_sessions WHERE id = ?`);
         const sess = sessStmt.get(activeQuizSessionId) as { status: string } | undefined;
         if (sess && sess.status === 'active') {
-          chosenToolCalls = [
-            {
-              name: 'answer_question',
-              arguments: {
-                sessionId: activeQuizSessionId,
-                answer: utterance.trim()
+          const lower = utterance.trim().toLowerCase();
+          const isExitCommand = /^(stop|exit|cancel|quit|end quiz|finish quiz)/i.test(lower);
+          const isOtherCommand = /(study plan|make me a plan|create a plan|steady plan|what.*exam|list exam|progress|streak|today.*plan|plan.*today)/i.test(lower);
+
+          if (isExitCommand) {
+            chosenToolCalls = [
+              {
+                name: 'end_quiz',
+                arguments: { sessionId: activeQuizSessionId }
               }
-            }
-          ];
+            ];
+          } else if (isOtherCommand) {
+            // Gracefully end quiz session so user's new request can be executed
+            try {
+              db.prepare(`UPDATE quiz_sessions SET status = 'completed', ended_at = datetime('now') WHERE id = ?`).run(activeQuizSessionId);
+            } catch {}
+            // Leave chosenToolCalls empty so LLM agent loop selects tool for the new command
+          } else {
+            // Standard answer to current quiz question
+            chosenToolCalls = [
+              {
+                name: 'answer_question',
+                arguments: {
+                  sessionId: activeQuizSessionId,
+                  answer: utterance.trim()
+                }
+              }
+            ];
+          }
         }
       }
 

@@ -122,6 +122,36 @@ const CURATED_QUESTIONS: Record<string, GeneratedQuestion[]> = {
     }
   ]
 };
+/**
+ * Strips properties that Google Gemini API rejects in function declaration parameters,
+ * such as $schema, additionalProperties, default, etc.
+ */
+export function cleanSchemaForGemini(schema: any): any {
+  if (!schema || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) return schema.map(cleanSchemaForGemini);
+
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === '$schema' || key === 'additionalProperties' || key === 'default') {
+      continue;
+    }
+    cleaned[key] = cleanSchemaForGemini(value);
+  }
+  return cleaned;
+}
+
+/**
+ * Helper to wrap any promise with a strict timeout so voice responses never stall
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number = 3800): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms)
+    )
+  ]);
+}
+
 
 export class LlmService {
   private geminiKey?: string;
@@ -164,10 +194,10 @@ ${previousQuestions.length > 0 ? `Avoid repeating previous questions: ${previous
     if (this.geminiClient) {
       try {
         const model = this.geminiClient.getGenerativeModel({
-          model: 'gemini-1.5-flash',
+          model: 'gemini-3.8-flash',
           generationConfig: { responseMimeType: 'application/json' }
         });
-        const resp = await model.generateContent(prompt);
+        const resp = await withTimeout(model.generateContent(prompt), 3800);
         const text = resp.response.text();
         const parsed = JSON.parse(text);
         if (parsed.question && parsed.expectedAnswer) {
@@ -259,10 +289,10 @@ Respond in strictly valid JSON:
     if (this.geminiClient) {
       try {
         const model = this.geminiClient.getGenerativeModel({
-          model: 'gemini-1.5-flash',
+          model: 'gemini-3.8-flash',
           generationConfig: { responseMimeType: 'application/json' }
         });
-        const resp = await model.generateContent(prompt);
+        const resp = await withTimeout(model.generateContent(prompt), 3800);
         const text = resp.response.text();
         const parsed = JSON.parse(text);
         if (typeof parsed.score === 'number' && parsed.feedback && parsed.correctAnswer) {
@@ -372,15 +402,15 @@ Rules:
     if (this.geminiClient) {
       try {
         const model = this.geminiClient.getGenerativeModel({
-          model: 'gemini-1.5-flash',
+          model: 'gemini-3.8-flash',
           systemInstruction: systemPrompt
         });
 
-        // Convert tools to Gemini format
+        // Convert tools to Gemini format with cleaned OpenAPI schemas (strip $schema, additionalProperties)
         const functionDeclarations = tools.map((t) => ({
           name: t.name,
           description: t.description,
-          parameters: t.inputSchema as any
+          parameters: cleanSchemaForGemini(t.inputSchema)
         }));
 
         const chat = model.startChat({
@@ -388,7 +418,7 @@ Rules:
         });
 
         const lastUserMsg = messages[messages.length - 1]?.content || '';
-        const result = await chat.sendMessage(lastUserMsg);
+        const result = await withTimeout(chat.sendMessage(lastUserMsg), 3800);
         const calls = result.response.functionCalls();
 
         if (calls && calls.length > 0) {
@@ -407,11 +437,33 @@ Rules:
       }
     }
 
-    // 2. High-precision rule-based Intent Matcher for $0 operation
+    // 2. High-precision rule-based Intent Matcher for $0 operation & robust voice fallback
     const lastMsg = (messages[messages.length - 1]?.content || '').toLowerCase().trim();
 
+    // Intent: stop / exit / cancel
+    if (
+      lastMsg.startsWith('stop') ||
+      lastMsg.startsWith('exit') ||
+      lastMsg.startsWith('cancel') ||
+      lastMsg.startsWith('quit') ||
+      lastMsg.includes('stop quiz') ||
+      lastMsg.includes('end quiz') ||
+      lastMsg.includes('finish quiz') ||
+      lastMsg === 'nevermind' ||
+      lastMsg === 'bye'
+    ) {
+      return {
+        reply: "Understood. What would you like to work on next?"
+      };
+    }
+
     // Intent: start quiz / quiz me
-    if (lastMsg.includes('quiz me') || lastMsg.includes('start quiz') || lastMsg.includes('test me') || lastMsg.includes('practice')) {
+    if (
+      lastMsg.includes('quiz') ||
+      lastMsg.includes('test me') ||
+      lastMsg.includes('practice') ||
+      lastMsg.includes('start quiz')
+    ) {
       const minutesMatch = lastMsg.match(/(\d+)\s*(?:minutes?|mins?)/);
       const minutes = minutesMatch ? parseInt(minutesMatch[1], 10) : 10;
 
@@ -435,8 +487,15 @@ Rules:
       };
     }
 
-    // Intent: make study plan
-    if (lastMsg.includes('study plan') || lastMsg.includes('make me a plan') || lastMsg.includes('create a plan')) {
+    // Intent: make study plan (including speech recognition mis-transcription "steady plan")
+    if (
+      lastMsg.includes('study plan') ||
+      lastMsg.includes('steady plan') ||
+      lastMsg.includes('make me a plan') ||
+      lastMsg.includes('create a plan') ||
+      lastMsg.includes('make a plan') ||
+      lastMsg.includes('schedule plan')
+    ) {
       const hoursMatch = lastMsg.match(/(\d+)\s*(?:hours?|hrs?)/);
       const hours = hoursMatch ? parseInt(hoursMatch[1], 10) : 2;
 
@@ -454,7 +513,15 @@ Rules:
     }
 
     // Intent: get today plan
-    if (lastMsg.includes("today's plan") || lastMsg.includes('plan for today') || lastMsg.includes('what should i study')) {
+    if (
+      lastMsg.includes("today's plan") ||
+      lastMsg.includes('plan for today') ||
+      lastMsg.includes('plan today') ||
+      (lastMsg.includes('plan') && lastMsg.includes('today')) ||
+      lastMsg.includes('what should i study') ||
+      lastMsg.includes('study plan today') ||
+      lastMsg.includes('my plan')
+    ) {
       return {
         toolCalls: [
           {
@@ -466,7 +533,13 @@ Rules:
     }
 
     // Intent: list exams
-    if (lastMsg.includes('list exams') || lastMsg.includes('what exams') || lastMsg.includes('my exams') || lastMsg.includes('upcoming exams')) {
+    if (
+      lastMsg.includes('list exams') ||
+      lastMsg.includes('what exams') ||
+      lastMsg.includes('my exams') ||
+      lastMsg.includes('upcoming exams') ||
+      lastMsg.includes('show exams')
+    ) {
       return {
         toolCalls: [
           {
@@ -477,8 +550,14 @@ Rules:
       };
     }
 
-    // Intent: get progress
-    if (lastMsg.includes('progress') || lastMsg.includes('streak') || lastMsg.includes('how am i doing') || lastMsg.includes('stats')) {
+    // Intent: get progress / streak
+    if (
+      lastMsg.includes('progress') ||
+      lastMsg.includes('streak') ||
+      lastMsg.includes('how am i doing') ||
+      lastMsg.includes('stats') ||
+      lastMsg.includes('metrics')
+    ) {
       return {
         toolCalls: [
           {
@@ -490,7 +569,12 @@ Rules:
     }
 
     // Intent: weak topics
-    if (lastMsg.includes('weak topics') || lastMsg.includes('weakest') || lastMsg.includes('need work')) {
+    if (
+      lastMsg.includes('weak') ||
+      lastMsg.includes('weakest') ||
+      lastMsg.includes('need work') ||
+      lastMsg.includes('struggling')
+    ) {
       return {
         toolCalls: [
           {

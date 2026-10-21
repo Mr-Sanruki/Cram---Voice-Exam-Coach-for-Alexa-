@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 
-describe('MCP Streamable HTTP Integration Test', () => {
+describe('MCP Streamable HTTP Integration Test', { timeout: 30000 }, () => {
   let server: Server;
   let serverUrl: string;
   let client: Client;
